@@ -287,7 +287,8 @@ export async function verifyPayment(req: Request, res: Response) {
       }
       log.debug({ network }, 'Casper payment detected');
       const result = await verifyCasperPayment(paymentPayload.payload, paymentRequirements, network, log);
-      verifyTotal.inc({ network, result: result.isValid ? 'valid' : 'invalid' });
+      // A transport failure is our fault, not the payer's; 'unknown' is alerted on.
+      verifyTotal.inc({ network, result: result.isValid ? 'valid' : result.invalidReason === 'unexpected_verify_error' ? 'unknown' : 'invalid' });
       recordDuration(startTime, network);
       log.info({ action: 'verify', network, success: result.isValid, payer: result.payer }, 'Verify complete');
       return res.json(result);

@@ -29,6 +29,8 @@ import { CasperFacilitatorError } from '../casper/client';
 
 const PAYER = 'account-hash-' + 'a'.repeat(64);
 const PAYEE = 'account-hash-' + 'b'.repeat(64);
+/** Stands in for a provider URL with an API key, which must never reach a response body. */
+const SECRET_URL = 'https://rpc.example/v1?key=SECRET';
 const PUBKEY_ED25519 = '01' + 'c'.repeat(64);
 const PUBKEY_SECP256K1 = '02' + 'd'.repeat(66);
 
@@ -328,23 +330,28 @@ describe('verifyCasperPayment', () => {
     expect(result.isValid).toBe(true);
   });
 
-  it('surfaces a facilitator transport failure as an invalid result', async () => {
-    (global as any).fetch = jest.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+  it('answers a facilitator transport failure with a fixed code, not its text', async () => {
+    (global as any).fetch = jest.fn().mockRejectedValue(new Error(`connect ECONNREFUSED ${SECRET_URL}`));
 
     const result = await verifyCasperPayment(basePayload(), baseRequirements(), CASPER_MAINNET_CAIP2);
 
-    expect(result.isValid).toBe(false);
-    expect(result.payer).toBe(PAYER);
-    expect(result.invalidReason).toMatch(/unreachable/);
+    expect(result).toEqual({ isValid: false, payer: PAYER, invalidReason: 'unexpected_verify_error' });
   });
 
-  it('surfaces a non-2xx facilitator response as an error', async () => {
-    mockFetch({ invalidReason: 'bad_request' }, false, 400);
+  it('answers a non-2xx facilitator response with a fixed code, not its text', async () => {
+    mockFetch({ error: `rpc ${SECRET_URL} failed` }, false, 502);
 
     const result = await verifyCasperPayment(basePayload(), baseRequirements(), CASPER_MAINNET_CAIP2);
 
-    expect(result.isValid).toBe(false);
-    expect(result.invalidReason).toMatch(/bad_request/);
+    expect(result).toEqual({ isValid: false, payer: PAYER, invalidReason: 'unexpected_verify_error' });
+  });
+
+  it('replaces a prose invalidReason and payer from the facilitator', async () => {
+    mockFetch({ isValid: false, payer: `payer lookup ${SECRET_URL}`, invalidReason: `balance read via ${SECRET_URL} failed` });
+
+    const result = await verifyCasperPayment(basePayload(), baseRequirements(), CASPER_MAINNET_CAIP2);
+
+    expect(result).toEqual({ isValid: false, payer: PAYER, invalidReason: 'invalid_exact_evm_payload_signature' });
   });
 });
 
@@ -413,14 +420,36 @@ describe('settleCasperPayment', () => {
     expect(result.errorReason).toBe('deploy_failed');
   });
 
-  it('reports a transport failure without throwing', async () => {
-    (global as any).fetch = jest.fn().mockRejectedValue(new Error('socket hang up'));
+  // After the envelope is forwarded, the service may have submitted the
+  // transfer. None of these tells us it did not, so none may be terminal.
+  it.each([
+    ['a timeout', () => jest.fn().mockRejectedValue(Object.assign(new Error('aborted'), { name: 'AbortError' }))],
+    ['a transport failure', () => jest.fn().mockRejectedValue(new Error(`socket hang up ${SECRET_URL}`))],
+    ['a non-2xx answer', () => jest.fn().mockResolvedValue({ ok: false, status: 502, statusText: 'Bad Gateway', text: async () => JSON.stringify({ error: `rpc ${SECRET_URL} failed` }) })],
+    ['a non-JSON answer', () => jest.fn().mockResolvedValue({ ok: true, status: 200, statusText: 'OK', text: async () => '<html>gateway</html>' })],
+    ['a success with no transaction hash', () => jest.fn().mockResolvedValue({ ok: true, status: 200, statusText: 'OK', text: async () => JSON.stringify({ success: true, payer: PAYER }) })],
+  ])('answers settlement_pending, never a terminal failure, on %s', async (_label, makeFetch) => {
+    (global as any).fetch = makeFetch();
 
     const result = await settleCasperPayment(basePayload(), baseRequirements(), CASPER_TESTNET_CAIP2);
 
-    expect(result.success).toBe(false);
-    expect(result.network).toBe(CASPER_TESTNET_CAIP2);
-    expect(result.errorReason).toMatch(/unreachable/);
+    expect(result).toEqual({
+      success: false,
+      payer: PAYER,
+      transaction: '',
+      network: CASPER_TESTNET_CAIP2,
+      errorReason: 'settlement_pending',
+      errorMessage: expect.stringMatching(/Do not re-authorize/),
+    });
+    expect(JSON.stringify(result)).not.toContain('SECRET');
+  });
+
+  it('replaces a prose errorReason and payer from the facilitator', async () => {
+    mockFetch({ success: false, payer: `payer lookup ${SECRET_URL}`, transaction: '', network: CASPER_MAINNET_CAIP2, errorReason: `submit via ${SECRET_URL} failed` });
+
+    const result = await settleCasperPayment(basePayload(), baseRequirements(), CASPER_MAINNET_CAIP2);
+
+    expect(result).toEqual({ success: false, payer: PAYER, transaction: '', network: CASPER_MAINNET_CAIP2, errorReason: 'settlement_failed' });
   });
 });
 

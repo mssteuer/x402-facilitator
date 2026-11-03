@@ -35,6 +35,18 @@ export class CasperFacilitatorError extends Error {
   }
 }
 
+/** Shape of an x402 spec reason code: lower snake_case, bounded length. */
+const REASON_CODE = /^[a-z][a-z0-9_]{0,63}$/;
+
+/**
+ * A reason from the Casper facilitator service, if it is a spec-shaped code.
+ * Anything else is prose from outside this codebase and must not reach a
+ * response body; the caller logs it and answers `fallback` instead.
+ */
+export function casperReasonCode(reason: unknown, fallback: string): string {
+  return typeof reason === 'string' && REASON_CODE.test(reason) ? reason : fallback;
+}
+
 function endpoint(pathname: string): string {
   return `${config.casperFacilitatorUrl.replace(/\/+$/, '')}${pathname}`;
 }

@@ -485,7 +485,8 @@ export async function settlePayment(req: Request, res: Response) {
       }
       log.debug({ network }, 'Casper settlement (wCSPR CEP-18 transfer)');
       const result = await settleCasperPayment(paymentPayload.payload, paymentRequirements, network, log);
-      settleTotal.inc({ network, result: result.success ? 'success' : 'failed' });
+      // settlement_pending is alerted on; a plain failure is not.
+      settleTotal.inc({ network, result: result.success ? 'success' : result.errorReason === 'settlement_pending' ? 'settlement_pending' : 'failed' });
       recordDuration(startTime, network);
       log.info({ action: 'settle', network, success: result.success, payer: result.payer, txHash: result.transaction }, 'Settle complete');
       return res.json(result);

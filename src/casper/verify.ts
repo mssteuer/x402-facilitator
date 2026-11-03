@@ -14,7 +14,7 @@
 import type { Logger } from 'pino';
 import { config } from '../config';
 import logger from '../lib/logger';
-import { verifyWithCasperFacilitator } from './client';
+import { casperReasonCode, verifyWithCasperFacilitator } from './client';
 import {
   isValidCasperAddress,
   isSameCasperAddress,
@@ -139,14 +139,19 @@ export async function verifyCasperPayment(
       log,
     );
 
-    return {
-      isValid: Boolean(result.isValid),
-      payer: result.payer || from,
-      invalidReason: result.isValid ? null : result.invalidReason ?? 'invalid_exact_evm_payload_signature',
-    };
+    if (result.isValid) return { isValid: true, payer: isValidCasperAddress(result.payer) ? result.payer : from, invalidReason: null };
+
+    // Pass a spec-shaped reason through; anything else is the service's own
+    // prose, logged and replaced.
+    const reason = casperReasonCode(result.invalidReason, 'invalid_exact_evm_payload_signature');
+    if (result.invalidReason != null && reason !== result.invalidReason) {
+      log.warn({ payer: from, network, detail: result.invalidReason }, 'Casper facilitator verify detail withheld from the caller');
+    }
+    return { isValid: false, payer: isValidCasperAddress(result.payer) ? result.payer : from, invalidReason: reason };
   } catch (error: any) {
+    // Transport and service errors embed text from outside this codebase.
     log.error({ err: error, payer: from }, 'Casper verification error');
-    return { isValid: false, payer: from, invalidReason: `Verification error: ${error.message}` };
+    return { isValid: false, payer: from, invalidReason: 'unexpected_verify_error' };
   }
 }
 
